@@ -47,7 +47,6 @@ speech_rate = st.sidebar.slider(
 )
 
 # --- 3. 核心功能：發音快取、發音渲染器與多層備援字典 API ---
-# 設定 max_entries=500 與 ttl=86400 保護伺服器記憶體不爆掉
 @st.cache_data(show_spinner=False, max_entries=500, ttl=86400)
 def get_gtts_audio_b64(text: str, slow: bool) -> str:
     """快取 gTTS 生成結果（帶有容量上限與 24 小時自動清理機制）"""
@@ -61,7 +60,7 @@ def render_audio_player(text: str, rate: float, engine: str):
     """根據選定的模組與語速渲染 HTML5 發音播放器"""
     clean_text = text.replace("'", "\\'").replace('"', '\\"').replace("\n", " ")
     
-    # 方案 A：Google TTS (雲端產生語音音訊檔，帶有快取防護)
+    # 方案 A：Google TTS (帶有快取防護)
     if "Google TTS" in engine:
         try:
             audio_b64 = get_gtts_audio_b64(text, rate < 0.8)
@@ -135,7 +134,6 @@ def fetch_word_details(word: str):
             if example:
                 final_example = example
             else:
-                # 依詞性動態生成自然的語境例句
                 if "ADJ" in first_pos or "ADJECTIVE" in first_pos:
                     final_example = f"His {clean_word} tone of voice made everyone feel quiet."
                 elif "NOUN" in first_pos or "N" in first_pos:
@@ -154,7 +152,7 @@ def fetch_word_details(word: str):
     except Exception:
         pass
 
-    # --- 第二層備援機制：Datamuse API (針對進階詞彙如 sepulchral, stalwart) ---
+    # --- 第二層備援機制：Datamuse API ---
     try:
         fallback_url = f"https://api.datamuse.com/words?sp={clean_word}&md=d"
         res_fb = requests.get(fallback_url, timeout=5)
@@ -175,7 +173,6 @@ def fetch_word_details(word: str):
                 
                 full_definition = "\n\n".join(definitions_list)
                 
-                # 依詞性動態生成自然情境例句，避免罐頭範本
                 if "ADJ" in first_pos:
                     final_example = f"His {clean_word} tone of voice made everyone feel uncomfortable."
                 elif "N" in first_pos:
@@ -203,51 +200,68 @@ def fetch_word_details(word: str):
     }
 
 def render_speech_recognizer(target_word: str):
-    """利用 Web Speech API 進行網頁端即時口說辨識 (STT)"""
+    """利用 Web Speech API 進行網頁端即時口說辨識 (STT) - 含權限與標點自動修復"""
     clean_target = target_word.lower().replace("'", "\\'").replace('"', '\\"')
     html_code = f"""
     <div style="margin-top: 5px;">
-        <button id="start-btn" onclick="startDictation()" style="padding: 8px 16px; border-radius: 8px; background-color: #2196F3; color: white; border: none; cursor: pointer; font-weight: bold;">
+        <button id="start-btn" onclick="startDictation()" style="padding: 10px 18px; border-radius: 8px; background-color: #2196F3; color: white; border: none; cursor: pointer; font-weight: bold; font-size: 15px;">
             🎤 開始口說答題
         </button>
-        <p id="result-text" style="font-weight: bold; margin-top: 10px; color: #333; font-size: 15px;">尚未錄音</p>
+        <p id="result-text" style="font-weight: bold; margin-top: 10px; color: #333; font-size: 15px;">尚未錄音 (點擊按鈕後請朗讀單字)</p>
     </div>
     <script>
     function startDictation() {{
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {{
-            var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            var recognition = new SpeechRecognition();
-            recognition.lang = 'en-US';
-            recognition.interimResults = false;
+        var SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {{
+            alert("您的瀏覽器不支援語音辨識。iPad/iPhone 請使用 iOS 14.5 以上的 Safari，Mac 請使用 Chrome 或 Safari。");
+            return;
+        }}
+
+        var recognition = new SpeechRecognition();
+        recognition.lang = 'en-US';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+
+        var resultEl = document.getElementById('result-text');
+        resultEl.innerText = "🎙️ 聆聽中...請清楚朗讀單字";
+        resultEl.style.color = "#FF9800";
+
+        recognition.onresult = function(event) {{
+            var spokenText = event.results[0][0].transcript.toLowerCase().trim();
+            // 移除尾端可能產生的標點符號 (如句號)
+            spokenText = spokenText.replace(/[.,?!]/g, "");
+            var target = "{clean_target}";
             
-            document.getElementById('result-text').innerText = "聆聽中...請朗讀單字";
-            document.getElementById('result-text').style.color = "#FF9800";
-            
-            recognition.onresult = function(event) {{
-                var spokenText = event.results[0][0].transcript.toLowerCase().trim();
-                var target = "{clean_target}";
-                if (spokenText === target) {{
-                    document.getElementById('result-text').innerText = "✅ 正確！妳說的是: " + spokenText;
-                    document.getElementById('result-text').style.color = "#4CAF50";
-                }} else {{
-                    document.getElementById('result-text').innerText = "❌ 答案不符。妳說的是: " + spokenText;
-                    document.getElementById('result-text').style.color = "#F44336";
-                }}
-            }};
-            
-            recognition.onerror = function(event) {{
-                document.getElementById('result-text').innerText = "辨識失敗或收音不清楚，請再試一次。";
-                document.getElementById('result-text').style.color = "#F44336";
-            }};
-            
+            if (spokenText === target || spokenText.includes(target)) {{
+                resultEl.innerText = "✅ 正確！妳說的是: " + spokenText;
+                resultEl.style.color = "#4CAF50";
+            }} else {{
+                resultEl.innerText = "❌ 答案不符。妳說的是: " + spokenText;
+                resultEl.style.color = "#F44336";
+            }}
+        }};
+
+        recognition.onerror = function(event) {{
+            console.error("Speech Recognition Error:", event.error);
+            if (event.error === 'not-allowed') {{
+                resultEl.innerText = "🚫 麥克風權限被拒絕！請點擊網址列左側鎖頭/設定開啟麥克風權限。";
+            }} else if (event.error === 'no-speech') {{
+                resultEl.innerText = "⚠️ 沒有偵測到聲音，請再試一次並提高音量。";
+            }} else {{
+                resultEl.innerText = "❌ 辨識失敗 (" + event.error + ")，請再試一次。";
+            }}
+            resultEl.style.color = "#F44336";
+        }};
+
+        try {{
             recognition.start();
-        }} else {{
-            alert("您的瀏覽器不支援語音辨識，請使用 Chrome 或 Edge 瀏覽器。");
+        }} catch(e) {{
+            resultEl.innerText = "⚠️ 錄音啟動中，請再點一次按鈕。";
         }}
     }}
     </script>
     """
-    st.components.v1.html(html_code, height=90)
+    st.components.v1.html(html_code, height=100)
 
 # --- 4. UI 主頁面與角色選擇 ---
 st.set_page_config(page_title="英單特訓王", page_icon="🔤", layout="wide")
@@ -281,7 +295,6 @@ if current_user["role"] == "mom":
             if new_word:
                 details = fetch_word_details(new_word)
                 if details:
-                    # 使用 on_conflict="word" 自動覆蓋更新舊例句與詳細內容
                     supabase.table("words").upsert(
                         {
                             "word": details["word"],
@@ -315,7 +328,7 @@ if current_user["role"] == "mom":
             else:
                 st.warning("請先輸入單字！")
 
-    # 查看現有單字庫：按字首 A-Z 分類排序
+    # 查看現有單字庫
     with tab2:
         st.subheader("📖 資料庫現有單字清單 (依字首 A-Z 分類)")
         try:

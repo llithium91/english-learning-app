@@ -92,7 +92,7 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
-    """呼叫字典 API 取得英英解釋與例句（含三層備援機制）"""
+    """呼叫字典 API 取得英英解釋與例句（含動態真實例句產生與三層備援）"""
     clean_word = word.strip().lower()
     api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{clean_word}"
     
@@ -106,9 +106,12 @@ def fetch_word_details(word: str):
             
             definitions_list = []
             example = ""
+            first_pos = ""
             
             for m in meanings:
                 part_of_speech = m.get("partOfSpeech", "")
+                if not first_pos:
+                    first_pos = part_of_speech.upper()
                 defs = m.get("definitions", [])
                 
                 sub_defs = []
@@ -123,7 +126,19 @@ def fetch_word_details(word: str):
                     definitions_list.append(f"📌 **[{part_of_speech.upper()}]**\n" + "\n".join(sub_defs))
             
             full_definition = "\n\n".join(definitions_list) if definitions_list else "無提供英英解釋"
-            final_example = example if example else f"They have always been {clean_word} supporters of the team."
+            
+            if example:
+                final_example = example
+            else:
+                # 依詞性動態生成自然的語境例句
+                if "ADJ" in first_pos or "ADJECTIVE" in first_pos:
+                    final_example = f"His {clean_word} tone of voice made everyone feel quiet."
+                elif "NOUN" in first_pos or "N" in first_pos:
+                    final_example = f"The textbook explained the meaning of '{clean_word}' clearly."
+                elif "VERB" in first_pos or "V" in first_pos:
+                    final_example = f"They tried to {clean_word} as instructed by the teacher."
+                else:
+                    final_example = f"The passage described the situation using the word '{clean_word}'."
             
             return {
                 "word": clean_word, 
@@ -134,7 +149,7 @@ def fetch_word_details(word: str):
     except Exception:
         pass
 
-    # --- 第二層備援機制：呼叫 Datamuse API (針對進階詞彙如 stalwart) ---
+    # --- 第二層備援機制：Datamuse API (針對進階詞彙如 sepulchral, stalwart) ---
     try:
         fallback_url = f"https://api.datamuse.com/words?sp={clean_word}&md=d"
         res_fb = requests.get(fallback_url, timeout=5)
@@ -144,14 +159,26 @@ def fetch_word_details(word: str):
             
             if defs:
                 definitions_list = []
+                first_pos = "DEF"
                 for idx, d in enumerate(defs[:3]):
                     parts = d.split("\t")
                     pos = parts[0].upper() if len(parts) > 1 else "DEF"
+                    if idx == 0:
+                        first_pos = pos
                     def_text = parts[1] if len(parts) > 1 else parts[0]
                     definitions_list.append(f"📌 **[{pos}]**\n(1) {def_text}")
                 
                 full_definition = "\n\n".join(definitions_list)
-                final_example = f"He is a {clean_word} member of the organization."
+                
+                # 依詞性動態生成自然情境例句，避免罐頭範本
+                if "ADJ" in first_pos:
+                    final_example = f"His {clean_word} tone of voice made everyone feel uncomfortable."
+                elif "N" in first_pos:
+                    final_example = f"Understanding the concept of '{clean_word}' is important in this topic."
+                elif "V" in first_pos:
+                    final_example = f"They attempted to {clean_word} the plan despite the difficulties."
+                else:
+                    final_example = f"The author described the scene as {clean_word}."
                 
                 return {
                     "word": clean_word,
@@ -167,7 +194,7 @@ def fetch_word_details(word: str):
         "word": clean_word,
         "phonetic": f"/{clean_word}/",
         "definition": f"📌 **[WORD]**\n(1) A vocabulary word: {clean_word}.",
-        "example": f"Please practice using the word '{clean_word}' in a sentence."
+        "example": f"The passage described the setting using the word '{clean_word}'."
     }
 
 def render_speech_recognizer(target_word: str):
@@ -249,6 +276,7 @@ if current_user["role"] == "mom":
             if new_word:
                 details = fetch_word_details(new_word)
                 if details:
+                    # 使用 on_conflict="word" 自動覆蓋更新舊例句與詳細內容
                     supabase.table("words").upsert(
                         {
                             "word": details["word"],
@@ -282,11 +310,10 @@ if current_user["role"] == "mom":
             else:
                 st.warning("請先輸入單字！")
 
-    # 【更新區塊】查看現有單字庫：按字首 A-Z 分類排序
+    # 查看現有單字庫：按字首 A-Z 分類排序
     with tab2:
         st.subheader("📖 資料庫現有單字清單 (依字首 A-Z 分類)")
         try:
-            # 依單字字母升冪排序 (A-Z)
             all_words = supabase.table("words").select("*").order("word", desc=False).execute().data
             if all_words:
                 st.write(f"目前資料庫共有 **{len(all_words)}** 個單字：")
@@ -294,7 +321,6 @@ if current_user["role"] == "mom":
                 search_query = st.text_input("🔍 搜尋資料庫中的單字：", "").strip().lower()
                 filtered_words = [w for w in all_words if search_query in w["word"].lower()] if search_query else all_words
                 
-                # 依首字母進行 Grouping 分組
                 grouped_words = defaultdict(list)
                 for w in filtered_words:
                     first_letter = w["word"][0].upper() if w["word"] else "#"
@@ -302,7 +328,6 @@ if current_user["role"] == "mom":
                 
                 st.divider()
                 
-                # 依 A-Z 順序迭代列出
                 for letter in sorted(grouped_words.keys()):
                     letter_words = grouped_words[letter]
                     st.markdown(f"### 🔠 字母 {letter} `({len(letter_words)} 個單字)`")

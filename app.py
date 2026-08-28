@@ -1,3 +1,8 @@
+import sys
+import io
+# 強制將標準輸出與錯誤輸出的編碼設為 UTF-8
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 import streamlit as st
 import requests
 from supabase import create_client, Client

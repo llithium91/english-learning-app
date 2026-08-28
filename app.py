@@ -46,20 +46,25 @@ speech_rate = st.sidebar.slider(
     help="0.5x 為慢速朗讀，1.0x 為正常語速，適合女兒練習聽力與跟讀。"
 )
 
-# --- 3. 核心功能：發音渲染器與多層備援字典 API ---
+# --- 3. 核心功能：發音快取、發音渲染器與多層備援字典 API ---
+# 設定 max_entries=500 與 ttl=86400 保護伺服器記憶體不爆掉
+@st.cache_data(show_spinner=False, max_entries=500, ttl=86400)
+def get_gtts_audio_b64(text: str, slow: bool) -> str:
+    """快取 gTTS 生成結果（帶有容量上限與 24 小時自動清理機制）"""
+    tts = gTTS(text=text, lang='en', slow=slow)
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    fp.seek(0)
+    return base64.b64encode(fp.read()).decode()
+
 def render_audio_player(text: str, rate: float, engine: str):
     """根據選定的模組與語速渲染 HTML5 發音播放器"""
     clean_text = text.replace("'", "\\'").replace('"', '\\"').replace("\n", " ")
     
-    # 方案 A：Google TTS (雲端產生語音音訊檔)
+    # 方案 A：Google TTS (雲端產生語音音訊檔，帶有快取防護)
     if "Google TTS" in engine:
         try:
-            tts = gTTS(text=text, lang='en', slow=(rate < 0.8))
-            fp = io.BytesIO()
-            tts.write_to_fp(fp)
-            fp.seek(0)
-            audio_b64 = base64.b64encode(fp.read()).decode()
-            
+            audio_b64 = get_gtts_audio_b64(text, rate < 0.8)
             html_code = f"""
             <audio id="audio_{hash(text)}" src="data:audio/mp3;base64,{audio_b64}"></audio>
             <button onclick="document.getElementById('audio_{hash(text)}').play()" 
@@ -70,7 +75,7 @@ def render_audio_player(text: str, rate: float, engine: str):
             st.components.v1.html(html_code, height=45)
             return
         except Exception:
-            st.warning("Google TTS 產生失敗，自動降級切換至 Web Speech 發音。")
+            st.warning("Google TTS 請求頻繁被擋，已自動切換至 Web Speech 發音。")
             
     # 方案 B：Web Speech API (預設，原生發音 + 動態語速控制)
     html_code = f"""

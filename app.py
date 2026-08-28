@@ -201,7 +201,7 @@ st.sidebar.write(f"目前身分：**{'管理者 (媽媽)' if current_user['role'
 # --- 5. 媽媽介面 (管理者) ---
 if current_user["role"] == "mom":
     st.header("👩‍🏫 媽媽管理後台")
-    tab1, tab2 = st.tabs(["➕ 新增單字進資料庫", "📊 查看與稽核成績"])
+    tab1, tab2, tab3 = st.tabs(["➕ 新增單字進資料庫", "📚 查看現有單字庫", "📊 查看與稽核成績"])
     
     with tab1:
         new_word = st.text_input("請輸入要新增的英文單字：").strip()
@@ -238,8 +238,39 @@ if current_user["role"] == "mom":
                     st.error("查無此單字，請確認拼字是否正確。")
             else:
                 st.warning("請先輸入單字！")
-                    
+
+    # 【新增功能】查看現有單字庫
     with tab2:
+        st.subheader("📖 資料庫現有單字清單")
+        try:
+            all_words = supabase.table("words").select("*").order("id", desc=True).execute().data
+            if all_words:
+                st.write(f"目前資料庫共有 **{len(all_words)}** 個單字：")
+                
+                # 搜尋過濾功能
+                search_query = st.text_input("🔍 搜尋資料庫中的單字：", "").strip().lower()
+                filtered_words = [w for w in all_words if search_query in w["word"].lower()] if search_query else all_words
+                
+                st.divider()
+                for w in filtered_words:
+                    c1, c2 = st.columns([3, 1])
+                    with c1:
+                        st.markdown(f"### 🔤 **{w['word']}** `{w.get('phonetic', '')}`")
+                    with c2:
+                        render_audio_player(w["word"], speech_rate, tts_engine)
+                        
+                    with st.expander("展開查看詳細內容"):
+                        st.markdown("**英英解釋：**")
+                        st.markdown(w["definition"])
+                        st.write("**例句：**", w["example"])
+                        render_audio_player(w["example"], speech_rate, tts_engine)
+                    st.divider()
+            else:
+                st.info("資料庫目前尚無任何單字，請至「新增單字進資料庫」頁籤建立第一個單字！")
+        except Exception as e:
+            st.error("無法讀取單字庫列表，請確認 Supabase 權限設定。")
+                    
+    with tab3:
         st.subheader("📋 兩姐妹單字審核與過關設定")
         students = [u for u in users_data if u["role"] == "student"]
         if students:

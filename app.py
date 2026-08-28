@@ -4,6 +4,7 @@ import sys
 import io
 import base64
 from datetime import datetime
+from collections import defaultdict
 
 # 設定系統環境變數以支援 UTF-8 編碼
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -281,40 +282,46 @@ if current_user["role"] == "mom":
             else:
                 st.warning("請先輸入單字！")
 
-    # 【更新區塊】查看現有單字庫：預覽模式（點擊展開才看發音與多重字義，並顯示新增日期）
+    # 【更新區塊】查看現有單字庫：按字首 A-Z 分類排序
     with tab2:
-        st.subheader("📖 資料庫現有單字清單")
+        st.subheader("📖 資料庫現有單字清單 (依字首 A-Z 分類)")
         try:
-            all_words = supabase.table("words").select("*").order("id", desc=True).execute().data
+            # 依單字字母升冪排序 (A-Z)
+            all_words = supabase.table("words").select("*").order("word", desc=False).execute().data
             if all_words:
                 st.write(f"目前資料庫共有 **{len(all_words)}** 個單字：")
                 
                 search_query = st.text_input("🔍 搜尋資料庫中的單字：", "").strip().lower()
                 filtered_words = [w for w in all_words if search_query in w["word"].lower()] if search_query else all_words
                 
-                st.divider()
+                # 依首字母進行 Grouping 分組
+                grouped_words = defaultdict(list)
                 for w in filtered_words:
-                    # 格式化日期時間為 YYYY-MM-DD
-                    raw_date = w.get("created_at", "")
-                    if raw_date:
-                        try:
-                            formatted_date = raw_date[:10]  # 取前 10 個字元 (YYYY-MM-DD)
-                        except Exception:
-                            formatted_date = "未知日期"
-                    else:
-                        formatted_date = "未知日期"
+                    first_letter = w["word"][0].upper() if w["word"] else "#"
+                    grouped_words[first_letter].append(w)
+                
+                st.divider()
+                
+                # 依 A-Z 順序迭代列出
+                for letter in sorted(grouped_words.keys()):
+                    letter_words = grouped_words[letter]
+                    st.markdown(f"### 🔠 字母 {letter} `({len(letter_words)} 個單字)`")
                     
-                    # 摺疊選單預覽標題：單字 + 音標 + 加入日期
-                    expander_label = f"🔤 {w['word']}   `{w.get('phonetic', '')}`   📅 加入日期：{formatted_date}"
-                    
-                    with st.expander(expander_label):
-                        st.markdown("**發音選項：**")
-                        render_audio_player(w["word"], speech_rate, tts_engine)
-                        st.divider()
-                        st.markdown("**英英解釋（包含所有詞性）：**")
-                        st.markdown(w["definition"])
-                        st.write("**經典例句：**", w["example"])
-                        render_audio_player(w["example"], speech_rate, tts_engine)
+                    for w in letter_words:
+                        raw_date = w.get("created_at", "")
+                        formatted_date = raw_date[:10] if raw_date else "未知日期"
+                        
+                        expander_label = f"🔤 {w['word']}   `{w.get('phonetic', '')}`   📅 加入日期：{formatted_date}"
+                        
+                        with st.expander(expander_label):
+                            st.markdown("**發音選項：**")
+                            render_audio_player(w["word"], speech_rate, tts_engine)
+                            st.divider()
+                            st.markdown("**英英解釋（包含所有詞性）：**")
+                            st.markdown(w["definition"])
+                            st.write("**經典例句：**", w["example"])
+                            render_audio_player(w["example"], speech_rate, tts_engine)
+                    st.divider()
             else:
                 st.info("資料庫目前尚無任何單字，請至「新增單字進資料庫」頁籤建立第一個單字！")
         except Exception as e:

@@ -3,6 +3,7 @@ import os
 import sys
 import io
 import base64
+from datetime import datetime
 
 # 設定系統環境變數以支援 UTF-8 編碼
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -90,7 +91,7 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
-    """呼叫字典 API 取得英英解釋與例句（含三層備援機制，確保高級單字如 stalwart 也能查到）"""
+    """呼叫字典 API 取得英英解釋與例句（含三層備援機制）"""
     clean_word = word.strip().lower()
     api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{clean_word}"
     
@@ -143,7 +144,6 @@ def fetch_word_details(word: str):
             if defs:
                 definitions_list = []
                 for idx, d in enumerate(defs[:3]):
-                    # Datamuse 回傳格式為 "n\tdefinition text"
                     parts = d.split("\t")
                     pos = parts[0].upper() if len(parts) > 1 else "DEF"
                     def_text = parts[1] if len(parts) > 1 else parts[0]
@@ -161,7 +161,7 @@ def fetch_word_details(word: str):
     except Exception:
         pass
 
-    # --- 第三層保底備援：若前兩者皆無結果，產生預設結構，確保新增不中斷 ---
+    # --- 第三層保底備援 ---
     return {
         "word": clean_word,
         "phonetic": f"/{clean_word}/",
@@ -248,7 +248,6 @@ if current_user["role"] == "mom":
             if new_word:
                 details = fetch_word_details(new_word)
                 if details:
-                    # 使用 on_conflict="word" 防禦衝突
                     supabase.table("words").upsert(
                         {
                             "word": details["word"],
@@ -282,7 +281,7 @@ if current_user["role"] == "mom":
             else:
                 st.warning("請先輸入單字！")
 
-    # 查看現有單字庫
+    # 【更新區塊】查看現有單字庫：預覽模式（點擊展開才看發音與多重字義，並顯示新增日期）
     with tab2:
         st.subheader("📖 資料庫現有單字清單")
         try:
@@ -295,18 +294,27 @@ if current_user["role"] == "mom":
                 
                 st.divider()
                 for w in filtered_words:
-                    c1, c2 = st.columns([3, 1])
-                    with c1:
-                        st.markdown(f"### 🔤 **{w['word']}** `{w.get('phonetic', '')}`")
-                    with c2:
+                    # 格式化日期時間為 YYYY-MM-DD
+                    raw_date = w.get("created_at", "")
+                    if raw_date:
+                        try:
+                            formatted_date = raw_date[:10]  # 取前 10 個字元 (YYYY-MM-DD)
+                        except Exception:
+                            formatted_date = "未知日期"
+                    else:
+                        formatted_date = "未知日期"
+                    
+                    # 摺疊選單預覽標題：單字 + 音標 + 加入日期
+                    expander_label = f"🔤 {w['word']}   `{w.get('phonetic', '')}`   📅 加入日期：{formatted_date}"
+                    
+                    with st.expander(expander_label):
+                        st.markdown("**發音選項：**")
                         render_audio_player(w["word"], speech_rate, tts_engine)
-                        
-                    with st.expander("展開查看詳細內容"):
-                        st.markdown("**英英解釋：**")
+                        st.divider()
+                        st.markdown("**英英解釋（包含所有詞性）：**")
                         st.markdown(w["definition"])
-                        st.write("**例句：**", w["example"])
+                        st.write("**經典例句：**", w["example"])
                         render_audio_player(w["example"], speech_rate, tts_engine)
-                    st.divider()
             else:
                 st.info("資料庫目前尚無任何單字，請至「新增單字進資料庫」頁籤建立第一個單字！")
         except Exception as e:

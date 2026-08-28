@@ -209,12 +209,16 @@ if current_user["role"] == "mom":
             if new_word:
                 details = fetch_word_details(new_word)
                 if details:
-                    supabase.table("words").upsert({
-                        "word": details["word"],
-                        "definition": details["definition"],
-                        "example": details["example"],
-                        "phonetic": details["phonetic"]
-                    }).execute()
+                    # 加入 on_conflict="word" 避免重複單字引發 APIError 崩潰
+                    supabase.table("words").upsert(
+                        {
+                            "word": details["word"],
+                            "definition": details["definition"],
+                            "example": details["example"],
+                            "phonetic": details["phonetic"]
+                        },
+                        on_conflict="word"
+                    ).execute()
                     
                     words_in_db = supabase.table("words").select("id").eq("word", details["word"]).execute().data
                     if words_in_db:
@@ -229,7 +233,7 @@ if current_user["role"] == "mom":
                                     "passed": False
                                 }).execute()
                             
-                    st.success(f"單字 **{new_word}** 已成功加入資料庫！")
+                    st.success(f"單字 **{new_word}** 已成功更新/加入資料庫！")
                     st.markdown("**英英解釋（多重詞性與字義）：**")
                     st.markdown(details["definition"])
                     st.write("**經典例句：**", details["example"])
@@ -239,7 +243,7 @@ if current_user["role"] == "mom":
             else:
                 st.warning("請先輸入單字！")
 
-    # 【新增功能】查看現有單字庫
+    # 查看現有單字庫
     with tab2:
         st.subheader("📖 資料庫現有單字清單")
         try:

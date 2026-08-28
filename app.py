@@ -24,9 +24,9 @@ except Exception as e:
     st.error("⚠️ Supabase 連線失敗，請檢查 Streamlit Secrets 中的 SUPABASE_URL 與 SUPABASE_KEY 設定。")
     st.stop()
 
-# --- 2. 輔助功能：字典 API 與網頁原生發音/語音辨識元件 ---
+# --- 2. 輔助功能：字典 API (多重字義) 與優化發音/語音辨識元件 ---
 def fetch_word_details(word: str):
-    """呼叫 Free Dictionary API 取得英英解釋、音標與例句"""
+    """呼叫 Free Dictionary API 取得所有詞性 (名詞/動詞/形容詞等) 的英英解釋與例句"""
     api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word.strip().lower()}"
     try:
         res = requests.get(api_url, timeout=5)
@@ -35,37 +35,54 @@ def fetch_word_details(word: str):
             phonetic = data.get("phonetic", "")
             meanings = data.get("meanings", [])
             
-            definition = "無提供英英解釋"
-            example = "無提供例句"
+            definitions_list = []
+            example = ""
             
+            # 解析並分類所有詞性與字義
             for m in meanings:
-                for d in m.get("definitions", []):
-                    if d.get("definition"):
-                        definition = f"[{m.get('partOfSpeech', '')}] {d.get('definition')}"
-                        if d.get("example"):
-                            example = d.get("example")
-                        break
-                if definition != "無提供英英解釋":
-                    break
-                    
-            return {"word": word.strip().lower(), "phonetic": phonetic, "definition": definition, "example": example}
+                part_of_speech = m.get("partOfSpeech", "") # 詞性: noun, verb, adjective...
+                defs = m.get("definitions", [])
+                
+                sub_defs = []
+                for idx, d in enumerate(defs[:3]): # 抓取每個詞性前 3 個主要字義
+                    def_text = d.get("definition", "")
+                    if def_text:
+                        sub_defs.append(f"({idx+1}) {def_text}")
+                    # 優先抓取第一個出現的實際例句
+                    if not example and d.get("example"):
+                        example = d.get("example")
+                        
+                if sub_defs:
+                    definitions_list.append(f"📌 **[{part_of_speech.upper()}]**\n" + "\n".join(sub_defs))
+            
+            # 將多個詞性與字義整合
+            full_definition = "\n\n".join(definitions_list) if definitions_list else "無提供英英解釋"
+            final_example = example if example else "無提供例句"
+            
+            return {
+                "word": word.strip().lower(), 
+                "phonetic": phonetic, 
+                "definition": full_definition, 
+                "example": final_example
+            }
     except Exception:
         pass
     return None
 
 def render_audio_player(text: str):
-    """利用 HTML5 瀏覽器原生語音發音 (TTS)"""
-    clean_text = text.replace("'", "\\'").replace('"', '\\"')
+    """利用 HTML5 原生語音合成進行放慢且清晰的美式發音 (TTS)"""
+    clean_text = text.replace("'", "\\'").replace('"', '\\"').replace("\n", " ")
     html_code = f"""
-    <button onclick="speak('{clean_text}')" style="padding: 6px 14px; border-radius: 8px; border: 1px solid #4CAF50; background-color: #f1f9f1; cursor: pointer; font-size: 14px;">
-        🔊 點擊聽發音
+    <button onclick="speak('{clean_text}')" style="padding: 7px 15px; border-radius: 8px; border: 1px solid #4CAF50; background-color: #f1f9f1; cursor: pointer; font-size: 14px; font-weight: bold; color: #2e7d32;">
+        🔊 播放清晰發音
     </button>
     <script>
     function speak(text) {{
-        window.speechSynthesis.cancel();
+        window.speechSynthesis.cancel(); // 停止先前的發音
         var msg = new SpeechSynthesisUtterance(text);
-        msg.lang = 'en-US';
-        msg.rate = 0.9;
+        msg.lang = 'en-US'; // 美式英語
+        msg.rate = 0.85;     // 語速稍微放慢至 0.85，咬字更清晰
+        msg.pitch = 1.0;    // 標準自然音調
         window.speechSynthesis.speak(msg);
     }}
     </script>
@@ -127,11 +144,11 @@ st.title("🔤 英文單字雲端特訓平台")
 try:
     users_data = supabase.table("users").select("*").execute().data
 except Exception as e:
-    st.error("無法存取 users 資料表，請確認已在 Supabase 建立對應資料表。")
+    st.error("無法存取 users 資料表，請確認已在 Supabase 執行 SQL 建表指令與授權。")
     st.stop()
 
 if not users_data:
-    st.warning("資料庫中無使用者資料，請至 Supabase 插入預設使用者（媽媽、姊姊、妹妹）。")
+    st.warning("資料庫中無使用者資料，請確認 Supabase SQL Editor 是否已寫入預設使用者。")
     st.stop()
 
 user_names = [u["name"] for u in users_data]
@@ -165,7 +182,6 @@ if current_user["role"] == "mom":
                         w_id = words_in_db[0]["id"]
                         students = [u for u in users_data if u["role"] == "student"]
                         for s in students:
-                            # 檢查紀錄是否已存在，若無則建立
                             exist_record = supabase.table("user_word_progress").select("id").eq("user_id", s["id"]).eq("word_id", w_id).execute().data
                             if not exist_record:
                                 supabase.table("user_word_progress").insert({
@@ -175,7 +191,8 @@ if current_user["role"] == "mom":
                                 }).execute()
                             
                     st.success(f"單字 **{new_word}** 已成功加入資料庫！")
-                    st.write("**英英解釋：**", details["definition"])
+                    st.markdown("**英英解釋（多重詞性與字義）：**")
+                    st.markdown(details["definition"])
                     st.write("**經典例句：**", details["example"])
                     render_audio_player(new_word)
                 else:
@@ -236,8 +253,9 @@ else:
             st.markdown(f"### 🔤 單字： **{curr_w['word']}** `{curr_w.get('phonetic', '')}`")
             render_audio_player(curr_w["word"])
             
-            with st.expander("點擊展開英英解釋與例句"):
-                st.write("**英英解釋：**", curr_w["definition"])
+            with st.expander("點擊展開完整英英解釋與例句"):
+                st.markdown("**英英解釋（包含所有詞性）：**")
+                st.markdown(curr_w["definition"])
                 st.write("**經典例句：**", curr_w["example"])
                 render_audio_player(curr_w["example"])
 
@@ -259,7 +277,8 @@ else:
             q_word_item = q_item["words"]
             p_id = q_item["id"]
             
-            st.info(f"💡 **題目（英英解釋）：**\n\n{q_word_item['definition']}")
+            st.info("💡 **題目（英英解釋）：**")
+            st.markdown(q_word_item['definition'])
             
             answer_type = st.radio("選擇答題方式：", ["鍵盤輸入拼字", "口說發音答題"], horizontal=True)
             

@@ -113,35 +113,25 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
-    """使用 Groq AI 配合多模型自動備援機制生成自然例句與繁中/英英解釋"""
+    """精簡型 Prompt 呼叫 Groq AI，避免 Request Entity Too Large (413) 錯誤"""
     clean_word = word.strip().lower()
 
-    # --- 優先方案：Groq AI (含動態多模型備援) ---
     if groq_client:
-        # 備選模型清單：若首選失敗會順序嘗試後續模型
         candidate_models = [
             "llama-3.3-70b-versatile",
-            "openai/gpt-oss-20b",
             "llama-3.1-8b-instant",
-            "groq/compound"
+            "mixtral-8x7b-32768"
         ]
         
-        prompt = f"""
-        Please provide dictionary details for the English word: "{clean_word}".
-        Return the result ONLY in strict JSON format with the following keys:
-        - "word": string (lowercase)
-        - "phonetic": string (IPA phonetic notation)
-        - "definition": string (Clear English definition with parts of speech and Traditional Chinese translations. Format nicely using Markdown with 📌 for parts of speech)
-        - "example": string (A natural, authentic, context-rich example sentence showing how the word is really used in modern English)
-
-        Example JSON format:
-        {{
-            "word": "abettor",
-            "phonetic": "/əˈbet.ər/",
-            "definition": "📌 **[NOUN]** 教唆者；幫兇\\n(1) A person who encourages or assists someone to do something wrong, in particular to commit a crime.",
-            "example": "He was charged as an abettor in the robbery."
-        }}
-        """
+        # 精簡 Prompt，大幅減少 Token 體積
+        prompt = f"""Dictionary details for "{clean_word}".
+Return JSON ONLY:
+{{
+  "word": "{clean_word}",
+  "phonetic": "IPA notation",
+  "definition": "📌 **[POS]** Traditional Chinese & English definitions",
+  "example": "A concise, natural example sentence"
+}}"""
 
         last_error = ""
         for model_name in candidate_models:
@@ -149,7 +139,8 @@ def fetch_word_details(word: str):
                 response = groq_client.chat.completions.create(
                     model=model_name,
                     messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
+                    response_format={"type": "json_object"},
+                    max_tokens=500
                 )
                 res_json = json.loads(response.choices[0].message.content)
                 return {
@@ -160,14 +151,9 @@ def fetch_word_details(word: str):
                 }
             except Exception as e:
                 last_error = str(e)
-                continue # 嘗試下一個模型
+                continue
 
-        st.error(f"⚠️ Groq 所有模型呼叫失敗，最後錯誤：{last_error}")
-    else:
-        if not HAS_GROQ:
-            st.warning("⚠️ 系統未偵測到 groq 套件，請確認 requirements.txt 已寫入 groq>=0.4.0")
-        elif "GROQ_API_KEY" not in st.secrets:
-            st.warning("⚠️ Streamlit Secrets 中未找到 GROQ_API_KEY 設定。")
+        st.error(f"⚠️ Groq API 呼叫失敗：{last_error}")
 
     # --- 備援方案 1：Free Dictionary API ---
     api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{clean_word}"

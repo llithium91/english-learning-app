@@ -20,15 +20,14 @@ from auth import render_login_sidebar
 from quiz import render_student_interface
 from admin import render_mom_interface
 
-# 嘗試載入 google-genai
+# 嘗試載入 OpenAI 套件
 try:
-    from google import genai
-    from google.genai import types
-    HAS_GENAI = True
+    from openai import OpenAI
+    HAS_OPENAI = True
 except ImportError:
-    HAS_GENAI = False
+    HAS_OPENAI = False
 
-# --- 1. 初始化 Supabase 與 Gemini 連線 ---
+# --- 1. 初始化 Supabase 與 OpenAI 連線 ---
 @st.cache_resource
 def init_supabase() -> Client:
     url = st.secrets["SUPABASE_URL"]
@@ -41,12 +40,13 @@ except Exception as e:
     st.error("⚠️ Supabase 連線失敗，請檢查 Streamlit Secrets 設定。")
     st.stop()
 
-gemini_client = None
-if HAS_GENAI and "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
+# 初始化 OpenAI Client
+openai_client = None
+if HAS_OPENAI and "OPENAI_API_KEY" in st.secrets and st.secrets["OPENAI_API_KEY"]:
     try:
-        gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+        openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     except Exception as e:
-        st.warning("⚠️ Gemini API 初始化失敗，將降級使用傳統字典 API。")
+        st.warning("⚠️ OpenAI API 初始化失敗，將降級使用傳統字典 API。")
 
 # --- 2. 側邊欄控制項：語音模組與語速拉霸 ---
 st.sidebar.title("⚙️ 播放與系統設定")
@@ -65,7 +65,7 @@ speech_rate = st.sidebar.slider(
     help="0.5x 為慢速朗讀，1.0x 為正常語速，適合女兒練習聽力與跟讀。"
 )
 
-# --- 3. 核心工具函式：發音與 API ---
+# --- 3. 核心工具函式：發音與 ChatGPT 字典 API ---
 @st.cache_data(show_spinner=False, max_entries=500, ttl=86400)
 def get_gtts_audio_b64(text: str, slow: bool) -> str:
     tts = gTTS(text=text, lang='en', slow=slow)
@@ -113,24 +113,31 @@ def render_audio_player(text: str, rate: float, engine: str):
 def fetch_word_details(word: str):
     clean_word = word.strip().lower()
 
-    if gemini_client:
+    # --- 優先方案：ChatGPT API (gpt-4o-mini) ---
+    if openai_client:
         try:
             prompt = f"""
             Please provide dictionary details for the English word: "{clean_word}".
             Return the result ONLY in strict JSON format with the following keys:
             - "word": string (lowercase)
-            - "phonetic": string (IPA phonetic notation)
+            - "phonetic": string (IPA phonetic notation, e.g., /əbˈzəluːʃn/)
             - "definition": string (Clear English definition with parts of speech and Traditional Chinese translations. Format nicely using Markdown with 📌 for parts of speech)
             - "example": string (A natural, authentic, context-rich example sentence showing how the word is really used in modern English)
+
+            Example JSON format:
+            {{
+                "word": "abettor",
+                "phonetic": "/əˈbet.ər/",
+                "definition": "📌 **[NOUN]** 教唆者；幫兇\\n(1) A person who encourages or assists someone to do something wrong, in particular to commit a crime.",
+                "example": "He was charged as an abettor in the robbery."
+            }}
             """
-            response = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json"
-                )
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"}
             )
-            res_json = json.loads(response.text)
+            res_json = json.loads(response.choices[0].message.content)
             return {
                 "word": clean_word,
                 "phonetic": res_json.get("phonetic", f"/{clean_word}/"),
@@ -138,8 +145,9 @@ def fetch_word_details(word: str):
                 "example": res_json.get("example", f"Please practice using the word '{clean_word}'.")
             }
         except Exception as e:
-            st.warning(f"Gemini API 查詢失敗 ({e})，切換至傳統字典 API。")
+            st.warning(f"ChatGPT API 查詢失敗 ({e})，切換至傳統字典 API。")
 
+    # --- 備援方案 1：Free Dictionary API ---
     api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{clean_word}"
     try:
         res = requests.get(api_url, timeout=5)

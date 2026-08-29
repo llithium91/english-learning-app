@@ -113,17 +113,16 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
-    """精簡型 Prompt 呼叫 Groq AI，避免 Request Entity Too Large (413) 錯誤"""
+    """僅使用 Groq 官方現有活躍模型，避開下架模型"""
     clean_word = word.strip().lower()
 
     if groq_client:
+        # 僅保留 Groq 官方活躍的模型
         candidate_models = [
             "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-            "mixtral-8x7b-32768"
+            "llama-3.1-8b-instant"
         ]
         
-        # 精簡 Prompt，大幅減少 Token 體積
         prompt = f"""Dictionary details for "{clean_word}".
 Return JSON ONLY:
 {{

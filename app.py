@@ -3,6 +3,7 @@ import os
 import sys
 import io
 import base64
+import json
 from datetime import datetime
 from collections import defaultdict
 
@@ -15,8 +16,10 @@ import streamlit as st
 import requests
 from supabase import create_client, Client
 from gtts import gTTS
+from google import genai
+from google.genai import types
 
-# --- 1. 初始化 Supabase 連線 ---
+# --- 1. 初始化 Supabase 與 Gemini 連線 ---
 @st.cache_resource
 def init_supabase() -> Client:
     url = st.secrets["SUPABASE_URL"]
@@ -28,6 +31,14 @@ try:
 except Exception as e:
     st.error("⚠️ Supabase 連線失敗，請檢查 Streamlit Secrets 設定。")
     st.stop()
+
+# 初始化 Gemini Client
+gemini_client = None
+if "GEMINI_API_KEY" in st.secrets and st.secrets["GEMINI_API_KEY"]:
+    try:
+        gemini_client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+    except Exception as e:
+        st.warning("⚠️ Gemini API 初始化失敗，將降級使用傳統字典 API。")
 
 # --- 2. 側邊欄控制項：語音模組與語速拉霸 ---
 st.sidebar.title("⚙️ 播放與系統設定")
@@ -46,7 +57,7 @@ speech_rate = st.sidebar.slider(
     help="0.5x 為慢速朗讀，1.0x 為正常語速，適合女兒練習聽力與跟讀。"
 )
 
-# --- 3. 核心功能：發音快取、發音渲染器與多層備援字典 API ---
+# --- 3. 核心功能：發音快取、發音渲染器與 AI 字典解析 ---
 @st.cache_data(show_spinner=False, max_entries=500, ttl=86400)
 def get_gtts_audio_b64(text: str, slow: bool) -> str:
     """快取 gTTS 生成結果（帶有容量上限與 24 小時自動清理機制）"""
@@ -60,7 +71,7 @@ def render_audio_player(text: str, rate: float, engine: str):
     """根據選定的模組與語速渲染 HTML5 發音播放器"""
     clean_text = text.replace("'", "\\'").replace('"', '\\"').replace("\n", " ")
     
-    # 方案 A：Google TTS (帶有快取防護)
+    # 方案 A：Google TTS
     if "Google TTS" in engine:
         try:
             audio_b64 = get_gtts_audio_b64(text, rate < 0.8)
@@ -76,7 +87,7 @@ def render_audio_player(text: str, rate: float, engine: str):
         except Exception:
             st.warning("Google TTS 請求頻繁被擋，已自動切換至 Web Speech 發音。")
             
-    # 方案 B：Web Speech API (預設，原生發音 + 動態語速控制)
+    # 方案 B：Web Speech API
     html_code = f"""
     <button onclick="speak('{clean_text}')" 
             style="padding: 7px 15px; border-radius: 8px; border: 1px solid #4CAF50; background-color: #f1f9f1; cursor: pointer; font-size: 14px; font-weight: bold; color: #2e7d32;">
@@ -84,10 +95,10 @@ def render_audio_player(text: str, rate: float, engine: str):
     </button>
     <script>
     function speak(text) {{
-        window.speechSynthesis.cancel(); // 停止先前的發音
+        window.speechSynthesis.cancel();
         var msg = new SpeechSynthesisUtterance(text);
         msg.lang = 'en-US';
-        msg.rate = {rate};  // 套用側邊欄拉霸的語速設定
+        msg.rate = {rate};
         msg.pitch = 1.0;
         window.speechSynthesis.speak(msg);
     }}
@@ -96,11 +107,47 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
-    """呼叫字典 API 取得英英解釋與例句（含動態真實例句產生與三層備援）"""
+    """優先使用 Gemini AI 生成自然例句與英英/中文解釋；若無 Gemini 則使用傳統 API 備援"""
     clean_word = word.strip().lower()
+
+    # --- 優先方案：Gemini AI 生成 ---
+    if gemini_client:
+        try:
+            prompt = f"""
+            Please provide dictionary details for the English word: "{clean_word}".
+            Return the result ONLY in strict JSON format with the following keys:
+            - "word": string (lowercase)
+            - "phonetic": string (IPA phonetic notation, e.g., /əbˈzəluːʃn/)
+            - "definition": string (Clear English definition with parts of speech and Traditional Chinese translations. Format nicely using Markdown with 📌 for parts of speech)
+            - "example": string (A natural, authentic, context-rich example sentence showing how the word is really used in modern English)
+
+            Example JSON format:
+            {{
+                "word": "absolution",
+                "phonetic": "/ˌæb.səˈluː.ʃən/",
+                "definition": "📌 **[NOUN]** 赦免；解職；罪過的赦免\\n(1) Formal release from guilt, obligation, or punishment.\\n(2) Official forgiveness of sins declared by a priest.",
+                "example": "The priest granted him absolution after he confessed his sins."
+            }}
+            """
+            response = gemini_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                )
+            )
+            res_json = json.loads(response.text)
+            return {
+                "word": clean_word,
+                "phonetic": res_json.get("phonetic", f"/{clean_word}/"),
+                "definition": res_json.get("definition", "無提供解釋"),
+                "example": res_json.get("example", f"Please practice using the word '{clean_word}'.")
+            }
+        except Exception as e:
+            st.warning(f"Gemini API 查詢失敗 ({e})，切換至傳統字典 API。")
+
+    # --- 備援方案 1：Free Dictionary API ---
     api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{clean_word}"
-    
-    # --- 第一層嘗試：Free Dictionary API ---
     try:
         res = requests.get(api_url, timeout=5)
         if res.status_code == 200:
@@ -152,7 +199,7 @@ def fetch_word_details(word: str):
     except Exception:
         pass
 
-    # --- 第二層備援機制：Datamuse API ---
+    # --- 備援方案 2：Datamuse API ---
     try:
         fallback_url = f"https://api.datamuse.com/words?sp={clean_word}&md=d"
         res_fb = requests.get(fallback_url, timeout=5)
@@ -191,7 +238,7 @@ def fetch_word_details(word: str):
     except Exception:
         pass
 
-    # --- 第三層保底備援 ---
+    # --- 備援方案 3：保底備援 ---
     return {
         "word": clean_word,
         "phonetic": f"/{clean_word}/",
@@ -200,7 +247,7 @@ def fetch_word_details(word: str):
     }
 
 def render_speech_recognizer(target_word: str):
-    """利用 Web Speech API 進行網頁端即時口說辨識 (STT) - 含權限與標點自動修復"""
+    """利用 Web Speech API 進行網頁端即時口說辨識 (STT)"""
     clean_target = target_word.lower().replace("'", "\\'").replace('"', '\\"')
     html_code = f"""
     <div style="margin-top: 5px;">
@@ -228,7 +275,6 @@ def render_speech_recognizer(target_word: str):
 
         recognition.onresult = function(event) {{
             var spokenText = event.results[0][0].transcript.toLowerCase().trim();
-            // 移除尾端可能產生的標點符號 (如句號)
             spokenText = spokenText.replace(/[.,?!]/g, "");
             var target = "{clean_target}";
             

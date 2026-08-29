@@ -15,19 +15,19 @@ import requests
 from supabase import create_client, Client
 from gtts import gTTS
 
-# --- 匯入自訂子模組 ---
+# --- 匯入專案子模組 ---
 from auth import render_login_sidebar
 from quiz import render_student_interface
 from admin import render_mom_interface
 
-# 嘗試載入 OpenAI 套件
+# 嘗試載入 groq 套件
 try:
-    from openai import OpenAI
-    HAS_OPENAI = True
+    from groq import Groq
+    HAS_GROQ = True
 except ImportError:
-    HAS_OPENAI = False
+    HAS_GROQ = False
 
-# --- 1. 初始化 Supabase 與 OpenAI 連線 ---
+# --- 1. 初始化 Supabase 與 Groq AI 連線 ---
 @st.cache_resource
 def init_supabase() -> Client:
     url = st.secrets["SUPABASE_URL"]
@@ -40,13 +40,13 @@ except Exception as e:
     st.error("⚠️ Supabase 連線失敗，請檢查 Streamlit Secrets 設定。")
     st.stop()
 
-# 初始化 OpenAI Client
-openai_client = None
-if HAS_OPENAI and "OPENAI_API_KEY" in st.secrets and st.secrets["OPENAI_API_KEY"]:
+# 初始化 Groq AI Client
+groq_client = None
+if HAS_GROQ and "GROQ_API_KEY" in st.secrets and st.secrets["GROQ_API_KEY"]:
     try:
-        openai_client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+        groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     except Exception as e:
-        st.warning("⚠️ OpenAI API 初始化失敗，將降級使用傳統字典 API。")
+        st.warning(f"⚠️ Groq API 初始化失敗 ({e})，將降級使用傳統字典 API。")
 
 # --- 2. 側邊欄控制項：語音模組與語速拉霸 ---
 st.sidebar.title("⚙️ 播放與系統設定")
@@ -65,9 +65,10 @@ speech_rate = st.sidebar.slider(
     help="0.5x 為慢速朗讀，1.0x 為正常語速，適合女兒練習聽力與跟讀。"
 )
 
-# --- 3. 核心工具函式：發音與 ChatGPT 字典 API ---
+# --- 3. 核心工具函式：發音播放器與 AI 單字解析 ---
 @st.cache_data(show_spinner=False, max_entries=500, ttl=86400)
 def get_gtts_audio_b64(text: str, slow: bool) -> str:
+    """快取 gTTS 生成結果"""
     tts = gTTS(text=text, lang='en', slow=slow)
     fp = io.BytesIO()
     tts.write_to_fp(fp)
@@ -75,6 +76,7 @@ def get_gtts_audio_b64(text: str, slow: bool) -> str:
     return base64.b64encode(fp.read()).decode()
 
 def render_audio_player(text: str, rate: float, engine: str):
+    """根據選定的模組與語速渲染 HTML5 發音播放器"""
     clean_text = text.replace("'", "\\'").replace('"', '\\"').replace("\n", " ")
     
     if "Google TTS" in engine:
@@ -111,16 +113,17 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
+    """優先使用 Groq AI (Llama 3.3) 生成自然例句與繁中/英英解釋；若無則啟用備援"""
     clean_word = word.strip().lower()
 
-    # --- 優先方案：ChatGPT API (gpt-4o-mini) ---
-    if openai_client:
+    # --- 優先方案：Groq AI (llama-3.3-70b-versatile) ---
+    if groq_client:
         try:
             prompt = f"""
             Please provide dictionary details for the English word: "{clean_word}".
             Return the result ONLY in strict JSON format with the following keys:
             - "word": string (lowercase)
-            - "phonetic": string (IPA phonetic notation, e.g., /əbˈzəluːʃn/)
+            - "phonetic": string (IPA phonetic notation)
             - "definition": string (Clear English definition with parts of speech and Traditional Chinese translations. Format nicely using Markdown with 📌 for parts of speech)
             - "example": string (A natural, authentic, context-rich example sentence showing how the word is really used in modern English)
 
@@ -132,8 +135,8 @@ def fetch_word_details(word: str):
                 "example": "He was charged as an abettor in the robbery."
             }}
             """
-            response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+            response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"}
             )
@@ -145,7 +148,12 @@ def fetch_word_details(word: str):
                 "example": res_json.get("example", f"Please practice using the word '{clean_word}'.")
             }
         except Exception as e:
-            st.warning(f"ChatGPT API 查詢失敗 ({e})，切換至傳統字典 API。")
+            st.error(f"⚠️ Groq API 呼叫失敗：{e}")
+    else:
+        if not HAS_GROQ:
+            st.warning("⚠️ 系統未偵測到 groq 套件，請確認 requirements.txt 已寫入 groq>=0.4.0")
+        elif "GROQ_API_KEY" not in st.secrets:
+            st.warning("⚠️ Streamlit Secrets 中未找到 GROQ_API_KEY 設定。")
 
     # --- 備援方案 1：Free Dictionary API ---
     api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{clean_word}"
@@ -200,6 +208,7 @@ def fetch_word_details(word: str):
     except Exception:
         pass
 
+    # --- 備援方案 2：保底罐頭 ---
     return {
         "word": clean_word,
         "phonetic": f"/{clean_word}/",
@@ -208,6 +217,7 @@ def fetch_word_details(word: str):
     }
 
 def render_speech_recognizer(target_word: str):
+    """Web Speech API 網頁端口說辨識 (STT) 模組"""
     clean_target = target_word.lower().replace("'", "\\'").replace('"', '\\"')
     html_code = f"""
     <div style="margin-top: 5px;">
@@ -273,10 +283,10 @@ def render_speech_recognizer(target_word: str):
 st.set_page_config(page_title="英單特訓王", page_icon="🔤", layout="wide")
 st.title("🔤 英文單字雲端特訓平台")
 
-# 1. 登入模組
+# 1. 執行登入模組 (來自 auth.py)
 current_user, users_data = render_login_sidebar(supabase)
 
-# 2. 權限與介面分流
+# 2. 權限與介面分流 (來自 admin.py 與 quiz.py)
 if current_user["role"] == "mom":
     render_mom_interface(
         users_data=users_data, 

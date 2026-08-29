@@ -4,6 +4,7 @@ import sys
 import io
 import base64
 import json
+import time
 
 # 設定系統環境變數以支援 UTF-8 編碼
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -113,14 +114,15 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
-    """僅使用 Groq 官方現有活躍模型，避開下架模型"""
+    """使用 Groq API 生成單字細節，含 Rate Limit 自動重試與活躍模型備援"""
     clean_word = word.strip().lower()
 
     if groq_client:
-        # 僅保留 Groq 官方活躍的模型
+        # 僅使用 Groq 官方目前 100% 活躍且支援 JSON 格式的模型
         candidate_models = [
             "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant"
+            "llama3-70b-8192",
+            "llama3-8b-8192"
         ]
         
         prompt = f"""Dictionary details for "{clean_word}".
@@ -134,25 +136,32 @@ Return JSON ONLY:
 
         last_error = ""
         for model_name in candidate_models:
-            try:
-                response = groq_client.chat.completions.create(
-                    model=model_name,
-                    messages=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"},
-                    max_tokens=500
-                )
-                res_json = json.loads(response.choices[0].message.content)
-                return {
-                    "word": clean_word,
-                    "phonetic": res_json.get("phonetic", f"/{clean_word}/"),
-                    "definition": res_json.get("definition", "無提供解釋"),
-                    "example": res_json.get("example", f"Please practice using the word '{clean_word}'.")
-                }
-            except Exception as e:
-                last_error = str(e)
-                continue
+            # 針對每個模型最多嘗試 2 次（避免 Rate Limit 衝擊）
+            for attempt in range(2):
+                try:
+                    response = groq_client.chat.completions.create(
+                        model=model_name,
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"},
+                        max_tokens=500
+                    )
+                    res_json = json.loads(response.choices[0].message.content)
+                    return {
+                        "word": clean_word,
+                        "phonetic": res_json.get("phonetic", f"/{clean_word}/"),
+                        "definition": res_json.get("definition", "無提供解釋"),
+                        "example": res_json.get("example", f"Please practice using the word '{clean_word}'.")
+                    }
+                except Exception as e:
+                    last_error = str(e)
+                    # 若為速率限制 (Rate limit)，暫停 1.5 秒後重試
+                    if "429" in last_error or "rate_limit" in last_error.lower():
+                        time.sleep(1.5)
+                        continue
+                    else:
+                        break # 其他錯誤則切換下一個模型
 
-        st.error(f"⚠️ Groq API 呼叫失敗：{last_error}")
+        st.error(f"⚠️ Groq API 暫時忙碌中，建議等候 10 秒後再試一次。（錯誤訊息：{last_error}）")
 
     # --- 備援方案 1：Free Dictionary API ---
     api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{clean_word}"

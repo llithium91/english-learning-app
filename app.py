@@ -121,8 +121,7 @@ def fetch_word_details(word: str):
         # 僅使用 Groq 官方目前 100% 活躍且支援 JSON 格式的模型
         candidate_models = [
             "llama-3.3-70b-versatile",
-            "llama3-70b-8192",
-            "llama3-8b-8192"
+            "llama-3.1-8b-instant"
         ]
         
         prompt = f"""Dictionary details for "{clean_word}".
@@ -136,7 +135,7 @@ Return JSON ONLY:
 
         last_error = ""
         for model_name in candidate_models:
-            # 針對每個模型最多嘗試 2 次（避免 Rate Limit 衝擊）
+            # 針對每個模型嘗試 2 次（避免流量管制）
             for attempt in range(2):
                 try:
                     response = groq_client.chat.completions.create(
@@ -154,12 +153,12 @@ Return JSON ONLY:
                     }
                 except Exception as e:
                     last_error = str(e)
-                    # 若為速率限制 (Rate limit)，暫停 1.5 秒後重試
+                    # 若為速率限制 (Rate limit)，暫停 2 秒後重試
                     if "429" in last_error or "rate_limit" in last_error.lower():
-                        time.sleep(1.5)
+                        time.sleep(2)
                         continue
                     else:
-                        break # 其他錯誤則切換下一個模型
+                        break # 其他錯誤切換至下一個活躍模型
 
         st.error(f"⚠️ Groq API 暫時忙碌中，建議等候 10 秒後再試一次。（錯誤訊息：{last_error}）")
 

@@ -113,42 +113,56 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
-    """優先使用 Groq AI (Llama 3.1 8B Instant) 生成自然例句與繁中/英英解釋；若無則啟用備援"""
+    """使用 Groq AI 配合多模型自動備援機制生成自然例句與繁中/英英解釋"""
     clean_word = word.strip().lower()
 
-    # --- 優先方案：Groq AI (使用通用支援模型 llama-3.1-8b-instant) ---
+    # --- 優先方案：Groq AI (含動態多模型備援) ---
     if groq_client:
-        try:
-            prompt = f"""
-            Please provide dictionary details for the English word: "{clean_word}".
-            Return the result ONLY in strict JSON format with the following keys:
-            - "word": string (lowercase)
-            - "phonetic": string (IPA phonetic notation)
-            - "definition": string (Clear English definition with parts of speech and Traditional Chinese translations. Format nicely using Markdown with 📌 for parts of speech)
-            - "example": string (A natural, authentic, context-rich example sentence showing how the word is really used in modern English)
+        # 備選模型清單：若首選失敗會順序嘗試後續模型
+        candidate_models = [
+            "llama-3.3-70b-versatile",
+            "openai/gpt-oss-20b",
+            "llama-3.1-8b-instant",
+            "groq/compound"
+        ]
+        
+        prompt = f"""
+        Please provide dictionary details for the English word: "{clean_word}".
+        Return the result ONLY in strict JSON format with the following keys:
+        - "word": string (lowercase)
+        - "phonetic": string (IPA phonetic notation)
+        - "definition": string (Clear English definition with parts of speech and Traditional Chinese translations. Format nicely using Markdown with 📌 for parts of speech)
+        - "example": string (A natural, authentic, context-rich example sentence showing how the word is really used in modern English)
 
-            Example JSON format:
-            {{
-                "word": "abettor",
-                "phonetic": "/əˈbet.ər/",
-                "definition": "📌 **[NOUN]** 教唆者；幫兇\\n(1) A person who encourages or assists someone to do something wrong, in particular to commit a crime.",
-                "example": "He was charged as an abettor in the robbery."
-            }}
-            """
-            response = groq_client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"}
-            )
-            res_json = json.loads(response.choices[0].message.content)
-            return {
-                "word": clean_word,
-                "phonetic": res_json.get("phonetic", f"/{clean_word}/"),
-                "definition": res_json.get("definition", "無提供解釋"),
-                "example": res_json.get("example", f"Please practice using the word '{clean_word}'.")
-            }
-        except Exception as e:
-            st.error(f"⚠️ Groq API 呼叫失敗：{e}")
+        Example JSON format:
+        {{
+            "word": "abettor",
+            "phonetic": "/əˈbet.ər/",
+            "definition": "📌 **[NOUN]** 教唆者；幫兇\\n(1) A person who encourages or assists someone to do something wrong, in particular to commit a crime.",
+            "example": "He was charged as an abettor in the robbery."
+        }}
+        """
+
+        last_error = ""
+        for model_name in candidate_models:
+            try:
+                response = groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"}
+                )
+                res_json = json.loads(response.choices[0].message.content)
+                return {
+                    "word": clean_word,
+                    "phonetic": res_json.get("phonetic", f"/{clean_word}/"),
+                    "definition": res_json.get("definition", "無提供解釋"),
+                    "example": res_json.get("example", f"Please practice using the word '{clean_word}'.")
+                }
+            except Exception as e:
+                last_error = str(e)
+                continue # 嘗試下一個模型
+
+        st.error(f"⚠️ Groq 所有模型呼叫失敗，最後錯誤：{last_error}")
     else:
         if not HAS_GROQ:
             st.warning("⚠️ 系統未偵測到 groq 套件，請確認 requirements.txt 已寫入 groq>=0.4.0")

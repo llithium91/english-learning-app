@@ -42,10 +42,23 @@ def render_grades_tab(users_data: list, supabase: Client, render_audio_fn, speec
         st.divider()
 
 
+def delete_word_from_db(word_id: int, word_text: str, supabase: Client):
+    """【刪除功能】刪除關聯進度紀錄與單字本體"""
+    try:
+        # 1. 刪除所有學生的該單字學習進度紀錄
+        supabase.table("user_word_progress").delete().eq("word_id", word_id).execute()
+        # 2. 刪除單字庫本體
+        supabase.table("words").delete().eq("id", word_id).execute()
+        st.success(f"🗑️ 單字 **{word_text}** 已成功從資料庫中刪除！")
+        st.rerun()
+    except Exception as e:
+        st.error(f"刪除失敗：{e}")
+
+
 def render_mom_interface(users_data: list, supabase: Client, fetch_word_fn, render_audio_fn, speech_rate: float, tts_engine: str):
     """【媽媽副程式入口】整合媽媽管理後台所有頁籤」"""
     st.header("👩‍🏫 媽媽管理後台")
-    tab1, tab2, tab3 = st.tabs(["➕ 新增單字進資料庫", "📚 查看現有單字庫", "📊 查看與稽核成績"])
+    tab1, tab2, tab3 = st.tabs(["➕ 新增單字進資料庫", "📚 查看與管理單字庫", "📊 查看與稽核成績"])
     
     # 頁籤 1：新增單字
     with tab1:
@@ -87,7 +100,7 @@ def render_mom_interface(users_data: list, supabase: Client, fetch_word_fn, rend
             else:
                 st.warning("請先輸入單字！")
 
-    # 頁籤 2：查看現有單字庫
+    # 頁籤 2：查看與管理現有單字庫（含刪除功能）
     with tab2:
         st.subheader("📖 資料庫現有單字清單 (依字首 A-Z 分類)")
         try:
@@ -123,12 +136,17 @@ def render_mom_interface(users_data: list, supabase: Client, fetch_word_fn, rend
                             st.markdown(w["definition"])
                             st.write("**經典例句：**", w["example"])
                             render_audio_fn(w["example"], speech_rate, tts_engine)
+                            st.divider()
+                            
+                            # 🗑️ 新增：刪除單字按鈕
+                            if st.button(f"🗑️ 刪除單字 '{w['word']}'", key=f"del_btn_{w['id']}"):
+                                delete_word_from_db(w["id"], w["word"], supabase)
                     st.divider()
             else:
                 st.info("資料庫目前尚無任何單字，請至「新增單字進資料庫」頁籤建立第一個單字！")
         except Exception as e:
             st.error("無法讀取單字庫列表，請確認 Supabase 權限設定。")
 
-    # 頁籤 3：呼叫獨立副程式【查看與稽核成績】
+    # 頁籤 3：查看與稽核成績
     with tab3:
         render_grades_tab(users_data, supabase, render_audio_fn, speech_rate, tts_engine)

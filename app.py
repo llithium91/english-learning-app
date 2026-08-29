@@ -113,10 +113,10 @@ def render_audio_player(text: str, rate: float, engine: str):
     st.components.v1.html(html_code, height=45)
 
 def fetch_word_details(word: str):
-    """優先使用 Groq AI (Llama 3.3) 生成自然例句與繁中/英英解釋；若無則啟用備援"""
+    """優先使用 Groq AI (Llama 3) 生成自然例句與繁中/英英解釋；若無則啟用備援"""
     clean_word = word.strip().lower()
 
-    # --- 優先方案：Groq AI (llama-3.3-70b-versatile) ---
+    # --- 優先方案：Groq AI (使用官方標準模型名稱 llama3-70b-8192) ---
     if groq_client:
         try:
             prompt = f"""
@@ -136,7 +136,7 @@ def fetch_word_details(word: str):
             }}
             """
             response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="llama3-70b-8192",
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_object"}
             )
